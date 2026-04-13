@@ -1,250 +1,177 @@
-import { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
-import { CATEGORIES, ALL_SKILLS } from '../lib/skills'
-import RadarChart from '../components/RadarChart'
+-- ============================================================
+-- BOXING PERFORMANCE PROFILE - DATABASE SCHEMA
+-- Run this in Supabase SQL Editor (https://supabase.com/dashboard)
+-- Go to: SQL Editor > New Query > paste this > Run
+-- ============================================================
 
-export default function AssessmentPage({ profile, onLogout }) {
-  const { id } = useParams()
-  const navigate = useNavigate()
-  const [assessment, setAssessment] = useState(null)
-  const [boxerRatings, setBoxerRatings] = useState({})
-  const [coachRatings, setCoachRatings] = useState({})
-  const [otherName, setOtherName] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
+-- 1. PROFILES TABLE
+-- Stores user info and role (coach or boxer)
+create table public.profiles (
+  id uuid references auth.users on delete cascade primary key,
+  email text not null,
+  full_name text not null default '',
+  role text not null check (role in ('coach', 'boxer')),
+  created_at timestamptz default now()
+);
 
-  const isCoach = profile.role === 'coach'
-  const isComplete = assessment?.status === 'complete'
-  const isBoxerPhase = !isCoach && assessment?.status === 'invited'
-  const isCoachPhase = isCoach && assessment?.status === 'boxer_done'
+alter table public.profiles enable row level security;
 
-  useEffect(() => {
-    loadAssessment()
-  }, [id])
+create policy "Users can read own profile"
+  on public.profiles for select
+  using (auth.uid() = id);
 
-  async function loadAssessment() {
-    const { data: assess } = await supabase
-      .from('assessments')
-      .select('*')
-      .eq('id', id)
-      .single()
+create policy "Users can update own profile"
+  on public.profiles for update
+  using (auth.uid() = id);
 
-    if (!assess) { navigate('/'); return }
-    setAssessment(assess)
+create policy "Users can insert own profile"
+  on public.profiles for insert
+  with check (auth.uid() = id);
 
-    // Load the other person's name
-    const otherId = isCoach ? assess.boxer_id : assess.coach_id
-    if (otherId) {
-      const { data: otherProfile } = await supabase
-        .from('profiles')
-        .select('full_name')
-        .eq('id', otherId)
-        .single()
-      setOtherName(otherProfile?.full_name || '')
-    }
+-- Coaches can see their boxers' profiles
+create policy "Coaches can see linked boxer profiles"
+  on public.profiles for select
+  using (
+    id in (
+      select boxer_id from public.assessments
+      where coach_id = auth.uid()
+    )
+  );
 
-    // Load existing ratings
-    const { data: ratings } = await supabase
-      .from('ratings')
-      .select('*')
-      .eq('assessment_id', id)
+-- 2. ASSESSMENTS TABLE
+-- Each assessment links a coach to a boxer with a date and status
+create table public.assessments (
+  id uuid default gen_random_uuid() primary key,
+  coach_id uuid references public.profiles(id) not null,
+  boxer_id uuid references public.profiles(id),
+  boxer_email text not null,
+  status text not null default 'invited' check (status in ('invited', 'boxer_done', 'complete')),
+  invite_token text unique default encode(gen_random_bytes(16), 'hex'),
+  created_at timestamptz default now(),
+  boxer_completed_at timestamptz,
+  coach_completed_at timestamptz,
+  notes text default ''
+);
 
-    const br = {}, cr = {}
-    ALL_SKILLS.forEach(s => { br[s] = 0; cr[s] = 0 })
-    ratings?.forEach(r => {
-      br[r.skill] = r.boxer_score || 0
-      cr[r.skill] = r.coach_score || 0
-    })
-    setBoxerRatings(br)
-    setCoachRatings(cr)
-    setLoading(false)
-  }
+alter table public.assessments enable row level security;
 
-  function setRating(skill, value, who) {
-    if (who === 'boxer') {
-      setBoxerRatings(prev => ({ ...prev, [skill]: prev[skill] === value ? 0 : value }))
-    } else {
-      setCoachRatings(prev => ({ ...prev, [skill]: prev[skill] === value ? 0 : value }))
-    }
-    setSaved(false)
-  }
+create policy "Coaches can see own assessments"
+  on public.assessments for select
+  using (coach_id = auth.uid());
 
-  async function saveRatings(submit = false) {
-    setSaving(true)
+create policy "Boxers can see own assessments"
+  on public.assessments for select
+  using (boxer_id = auth.uid());
 
-    // Delete existing ratings and re-insert
-    await supabase.from('ratings').delete().eq('assessment_id', id)
+create policy "Coaches can create assessments"
+  on public.assessments for insert
+  with check (coach_id = auth.uid());
 
-    const rows = ALL_SKILLS.map(skill => ({
-      assessment_id: id,
-      skill,
-      boxer_score: boxerRatings[skill] || 0,
-      coach_score: coachRatings[skill] || 0
-    }))
+create policy "Coaches can update own assessments"
+  on public.assessments for update
+  using (coach_id = auth.uid());
 
-    await supabase.from('ratings').insert(rows)
+create policy "Boxers can update own assessments"
+  on public.assessments for update
+  using (boxer_id = auth.uid());
 
-    if (submit) {
-      const updates = {}
-      if (!isCoach) {
-        updates.status = 'boxer_done'
-        updates.boxer_completed_at = new Date().toISOString()
-      } else {
-        updates.status = 'complete'
-        updates.coach_completed_at = new Date().toISOString()
-      }
-      await supabase.from('assessments').update(updates).eq('id', id)
-      navigate('/')
-    } else {
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
-    }
+-- Allow token-based lookup for invite acceptance
+create policy "Anyone can find assessment by invite token"
+  on public.assessments for select
+  using (invite_token is not null);
 
-    setSaving(false)
-  }
+-- 3. RATINGS TABLE
+-- Stores individual skill ratings per assessment
+create table public.ratings (
+  id uuid default gen_random_uuid() primary key,
+  assessment_id uuid references public.assessments(id) on delete cascade not null,
+  skill text not null,
+  boxer_score int check (boxer_score >= 0 and boxer_score <= 5) default 0,
+  coach_score int check (coach_score >= 0 and coach_score <= 5) default 0,
+  unique (assessment_id, skill)
+);
 
-  function avg(ratings) {
-    const vals = Object.values(ratings).filter(v => v > 0)
-    return vals.length ? (vals.reduce((a,b) => a+b, 0) / vals.length).toFixed(1) : '0.0'
-  }
+alter table public.ratings enable row level security;
 
-  // Can this user edit?
-  const canEditBoxer = !isCoach && (assessment?.status === 'invited')
-  const canEditCoach = isCoach && (assessment?.status === 'boxer_done')
+create policy "Users can see ratings for their assessments"
+  on public.ratings for select
+  using (
+    assessment_id in (
+      select id from public.assessments
+      where coach_id = auth.uid() or boxer_id = auth.uid()
+    )
+  );
 
-  if (loading) {
-    return <div className="loading" style={{ minHeight: '100vh' }}><div className="spinner"></div> Loading...</div>
-  }
+create policy "Users can insert ratings for their assessments"
+  on public.ratings for insert
+  with check (
+    assessment_id in (
+      select id from public.assessments
+      where coach_id = auth.uid() or boxer_id = auth.uid()
+    )
+  );
 
-  return (
-    <div className="app-shell">
-      <div className="top-bar">
-        <div className="logo">Performance Profile</div>
-        <div className="user-info">
-          <span className="user-name">{profile.full_name}</span>
-          <span className={`role-badge ${profile.role}`}>{profile.role}</span>
-          <button className="btn-ghost" onClick={onLogout}>Logout</button>
-        </div>
-      </div>
+create policy "Users can update ratings for their assessments"
+  on public.ratings for update
+  using (
+    assessment_id in (
+      select id from public.assessments
+      where coach_id = auth.uid() or boxer_id = auth.uid()
+    )
+  );
 
-      <button className="back-link" onClick={() => navigate('/')}>
-        ← Back to Dashboard
-      </button>
+create policy "Users can delete ratings for their assessments"
+  on public.ratings for delete
+  using (
+    assessment_id in (
+      select id from public.assessments
+      where coach_id = auth.uid() or boxer_id = auth.uid()
+    )
+  );
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 8 }}>
-        <div>
-          <h2 className="page-title" style={{ margin: 0 }}>
-            {isCoach ? `Assessment: ${otherName}` : `Self-Assessment`}
-          </h2>
-          <p style={{ fontSize: '0.8rem', color: 'var(--text-dim)', marginTop: 4 }}>
-            {isCoach ? (isCoachPhase ? 'Rate this boxer\'s skills' : isComplete ? 'Completed assessment' : 'Waiting for boxer') :
-              (canEditBoxer ? 'Rate yourself on each skill from 1 to 5' : isComplete ? 'Completed assessment' : 'Submitted — waiting for coach')}
-          </p>
-        </div>
-        <span className={`status-tag status-${assessment.status}`} style={{ fontSize: '0.75rem' }}>
-          {assessment.status === 'invited' ? 'Boxer Phase' : assessment.status === 'boxer_done' ? 'Coach Phase' : 'Complete'}
-        </span>
-      </div>
+-- 4. INDEX for faster lookups
+create index idx_assessments_coach on public.assessments(coach_id);
+create index idx_assessments_boxer on public.assessments(boxer_id);
+create index idx_assessments_token on public.assessments(invite_token);
+create index idx_ratings_assessment on public.ratings(assessment_id);
 
-      <div className="assessment-layout">
-        {/* Skills panel */}
-        <div className="skills-panel">
-          {Object.entries(CATEGORIES).map(([cat, skills], ci) => (
-            <div key={cat}>
-              <div className="category-title" style={ci > 0 ? { marginTop: 14 } : {}}>
-                {cat}
-              </div>
-              {(isComplete || isCoachPhase) && (
-                <div className="skill-header">
-                  <div className="col-label coach-col">Coach</div>
-                  <div></div>
-                  <div className="col-label boxer-col">Boxer</div>
-                </div>
-              )}
-              {skills.map(skill => (
-                <div key={skill} className="skill-row">
-                  {/* Coach dots - only show when both sides visible */}
-                  {(isComplete || isCoachPhase) && (
-                    <div className="rating-dots reversed">
-                      {[1,2,3,4,5].map(i => (
-                        <button
-                          key={i}
-                          className={`dot coach-dot ${coachRatings[skill] >= i ? 'active' : ''} ${!canEditCoach ? 'disabled' : ''}`}
-                          onClick={() => canEditCoach && setRating(skill, i, 'coach')}
-                        >
-                          {i}
-                        </button>
-                      ))}
-                    </div>
-                  )}
+-- 5. FUNCTION: Auto-create profile on signup
+create or replace function public.handle_new_user()
+returns trigger as $$
+begin
+  insert into public.profiles (id, email, full_name, role)
+  values (
+    new.id,
+    new.email,
+    coalesce(new.raw_user_meta_data->>'full_name', ''),
+    coalesce(new.raw_user_meta_data->>'role', 'boxer')
+  );
+  return new;
+end;
+$$ language plpgsql security definer;
 
-                  <div className="skill-label">{skill}</div>
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
 
-                  {/* Boxer dots */}
-                  <div className="rating-dots">
-                    {[1,2,3,4,5].map(i => (
-                      <button
-                        key={i}
-                        className={`dot boxer-dot ${boxerRatings[skill] >= i ? 'active' : ''} ${!canEditBoxer ? 'disabled' : ''}`}
-                        onClick={() => canEditBoxer && setRating(skill, i, 'boxer')}
-                      >
-                        {i}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
+-- 6. FUNCTION: Link boxer to assessment when they accept invite
+create or replace function public.accept_invite(token text, user_id uuid)
+returns uuid as $$
+declare
+  assessment_record public.assessments%rowtype;
+begin
+  select * into assessment_record
+  from public.assessments
+  where invite_token = token and status = 'invited';
 
-        {/* Chart panel */}
-        <div className="chart-panel">
-          <div className="avg-badges">
-            {(isComplete || isCoachPhase) && (
-              <div className="avg-badge coach">
-                <div className="number">{avg(coachRatings)}</div>
-                <div className="label">Coach</div>
-              </div>
-            )}
-            <div className="avg-badge boxer">
-              <div className="number">{avg(boxerRatings)}</div>
-              <div className="label">Boxer</div>
-            </div>
-          </div>
+  if not found then
+    raise exception 'Invalid or expired invite';
+  end if;
 
-          <RadarChart boxerRatings={boxerRatings} coachRatings={(isComplete || isCoachPhase) ? coachRatings : {}} />
+  update public.assessments
+  set boxer_id = user_id
+  where id = assessment_record.id;
 
-          <div className="legend">
-            {(isComplete || isCoachPhase) && (
-              <div className="legend-item">
-                <div className="legend-swatch" style={{ background: 'var(--coach)' }}></div> Coach
-              </div>
-            )}
-            <div className="legend-item">
-              <div className="legend-swatch" style={{ background: 'var(--accent)' }}></div> Boxer
-            </div>
-          </div>
-
-          {/* Action buttons */}
-          {(canEditBoxer || canEditCoach) && (
-            <div className="assessment-actions">
-              <button className="btn btn-secondary" onClick={() => saveRatings(false)} disabled={saving}>
-                {saving ? 'Saving...' : saved ? 'Saved ✓' : 'Save Draft'}
-              </button>
-              <button className="btn btn-primary" onClick={() => {
-                if (confirm('Submit your assessment? You won\'t be able to edit after submitting.')) {
-                  saveRatings(true)
-                }
-              }} disabled={saving}>
-                Submit Assessment
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
+  return assessment_record.id;
+end;
+$$ language plpgsql security definer;

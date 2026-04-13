@@ -12,6 +12,7 @@ export default function AuthPage() {
   const [success, setSuccess] = useState('')
   const [loading, setLoading] = useState(false)
   const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
   const redirectTo = searchParams.get('redirect') || '/'
 
   async function handleSubmit(e) {
@@ -34,6 +35,8 @@ export default function AuthPage() {
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) throw error
+        // Navigate to the redirect target after successful login
+        navigate(redirectTo)
       }
     } catch (err) {
       setError(err.message)
