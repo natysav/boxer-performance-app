@@ -1,167 +1,110 @@
--- ============================================================
--- BOXING PERFORMANCE PROFILE - DATABASE SCHEMA
--- Run this in Supabase SQL Editor (https://supabase.com/dashboard)
--- Go to: SQL Editor > New Query > paste this > Run
--- ============================================================
+# Boxing Performance Profile
 
--- 1. PROFILES TABLE
--- Stores user info and role (coach or boxer)
-create table public.profiles (
-  id uuid references auth.users on delete cascade primary key,
-  email text not null,
-  full_name text not null default '',
-  role text not null check (role in ('coach', 'boxer')),
-  created_at timestamptz default now()
-);
+A two-way skills assessment platform where boxing coaches and their boxers rate skills independently, then compare results on an overlay radar chart.
 
-alter table public.profiles enable row level security;
+## How It Works
 
-create policy "Users can read own profile"
-  on public.profiles for select
-  using (auth.uid() = id);
+### The Flow
 
-create policy "Users can update own profile"
-  on public.profiles for update
-  using (auth.uid() = id);
+1. **Coach signs up** — creates an account with the "Coach" role
+2. **Coach creates an assessment** — enters the boxer's email, gets a unique shareable link
+3. **Coach sends the link** — shares it via text, WhatsApp, email, or any messaging app
+4. **Boxer clicks the link** — signs up (if needed) with the "Boxer" role, gets linked to the assessment
+5. **Boxer rates themselves** — scores each of 21 skills from 1 to 5, then submits
+6. **Coach sees the update** — dashboard shows the assessment status changed to "Boxer Complete"
+7. **Coach does their assessment** — rates the same boxer on the same 21 skills
+8. **Both profiles overlay** — a radar chart shows coach vs. boxer ratings side by side
+9. **Progress tracking** — each assessment is date-stamped and stored for historical comparison
 
-create policy "Users can insert own profile"
-  on public.profiles for insert
-  with check (auth.uid() = id);
+### Skills Assessed (21 total)
 
--- Coaches can see their boxers' profiles
-create policy "Coaches can see linked boxer profiles"
-  on public.profiles for select
-  using (
-    id in (
-      select boxer_id from public.assessments
-      where coach_id = auth.uid()
-    )
-  );
+| Category   | Skills                                                        |
+|------------|---------------------------------------------------------------|
+| Offense    | Fast Jab, Good Uppercut, Powerful Straights, Powerful Hook, Combinations |
+| Defense    | Block Punches, Slip Punches, Counters, Feints                 |
+| Ring Craft | Footwork, Switching, Work Inside, Change Tempo, Control the Ring |
+| Physical   | Fitness, Strength, Flexibility, Stamina, Reactions            |
+| Mental     | Competitive, Determined, Confidence                           |
 
--- 2. ASSESSMENTS TABLE
--- Each assessment links a coach to a boxer with a date and status
-create table public.assessments (
-  id uuid default gen_random_uuid() primary key,
-  coach_id uuid references public.profiles(id) not null,
-  boxer_id uuid references public.profiles(id),
-  boxer_email text not null,
-  status text not null default 'invited' check (status in ('invited', 'boxer_done', 'complete')),
-  invite_token text unique default encode(gen_random_bytes(16), 'hex'),
-  created_at timestamptz default now(),
-  boxer_completed_at timestamptz,
-  coach_completed_at timestamptz,
-  notes text default ''
-);
+### Assessment Statuses
 
-alter table public.assessments enable row level security;
+- **Awaiting Boxer** (`invited`) — link sent, waiting for boxer to complete self-assessment
+- **Boxer Complete** (`boxer_done`) — boxer submitted, coach can now do their assessment
+- **Complete** (`complete`) — both sides done, radar chart shows the overlay
 
-create policy "Coaches can see own assessments"
-  on public.assessments for select
-  using (coach_id = auth.uid());
+## Tech Stack
 
-create policy "Boxers can see own assessments"
-  on public.assessments for select
-  using (boxer_id = auth.uid());
+- **Frontend**: React 18 + Vite (SPA with client-side routing via React Router)
+- **Backend/Database**: [Supabase](https://supabase.com) (PostgreSQL + Auth + Row Level Security)
+- **Hosting**: [Vercel](https://vercel.com) (static deployment with SPA rewrites)
+- **Styling**: Custom CSS with dark theme, Barlow + Bebas Neue fonts
+- **Visualization**: HTML5 Canvas radar chart
 
-create policy "Coaches can create assessments"
-  on public.assessments for insert
-  with check (coach_id = auth.uid());
+## Project Structure
 
-create policy "Coaches can update own assessments"
-  on public.assessments for update
-  using (coach_id = auth.uid());
+```
+├── index.html              # Vite HTML entry point
+├── vite.config.js          # Vite build configuration
+├── vercel.json             # Vercel SPA rewrite rules
+├── package.json            # Dependencies and scripts
+├── schema.sql              # Supabase database schema (run in SQL Editor)
+├── .env.example            # Environment variable template
+└── src/
+    ├── main.jsx            # React entry point
+    ├── App.jsx             # Router and session management
+    ├── styles.css          # Global styles (dark theme)
+    ├── lib/
+    │   ├── supabase.js     # Supabase client initialization
+    │   └── skills.js       # Skill categories and names
+    ├── components/
+    │   └── RadarChart.jsx  # Canvas-based radar/spider chart
+    └── pages/
+        ├── AuthPage.jsx    # Sign up / log in
+        ├── Dashboard.jsx   # Assessment list + invite modal
+        ├── AssessmentPage.jsx  # Skill rating UI + radar chart
+        └── AcceptInvite.jsx    # Invite link handler
+```
 
-create policy "Boxers can update own assessments"
-  on public.assessments for update
-  using (boxer_id = auth.uid());
+## Setup
 
--- Allow token-based lookup for invite acceptance
-create policy "Anyone can find assessment by invite token"
-  on public.assessments for select
-  using (invite_token is not null);
+### 1. Supabase
 
--- 3. RATINGS TABLE
--- Stores individual skill ratings per assessment
-create table public.ratings (
-  id uuid default gen_random_uuid() primary key,
-  assessment_id uuid references public.assessments(id) on delete cascade not null,
-  skill text not null,
-  boxer_score int check (boxer_score >= 0 and boxer_score <= 5) default 0,
-  coach_score int check (coach_score >= 0 and coach_score <= 5) default 0
-);
+1. Create a project at [supabase.com](https://supabase.com)
+2. Go to **SQL Editor > New Query**
+3. Paste the contents of `schema.sql` and click **Run**
+4. Go to **Settings > API** and copy your **Project URL** and **anon public key**
 
-alter table public.ratings enable row level security;
+### 2. Local Development
 
-create policy "Users can see ratings for their assessments"
-  on public.ratings for select
-  using (
-    assessment_id in (
-      select id from public.assessments
-      where coach_id = auth.uid() or boxer_id = auth.uid()
-    )
-  );
+```bash
+# Clone and install
+git clone <your-repo-url>
+cd boxer-performance-app
+npm install
 
-create policy "Users can insert ratings for their assessments"
-  on public.ratings for insert
-  with check (
-    assessment_id in (
-      select id from public.assessments
-      where coach_id = auth.uid() or boxer_id = auth.uid()
-    )
-  );
+# Configure environment
+cp .env.example .env
+# Edit .env with your Supabase URL and anon key
 
-create policy "Users can update ratings for their assessments"
-  on public.ratings for update
-  using (
-    assessment_id in (
-      select id from public.assessments
-      where coach_id = auth.uid() or boxer_id = auth.uid()
-    )
-  );
+# Start dev server
+npm run dev
+```
 
--- 4. INDEX for faster lookups
-create index idx_assessments_coach on public.assessments(coach_id);
-create index idx_assessments_boxer on public.assessments(boxer_id);
-create index idx_assessments_token on public.assessments(invite_token);
-create index idx_ratings_assessment on public.ratings(assessment_id);
+### 3. Deploy to Vercel
 
--- 5. FUNCTION: Auto-create profile on signup
-create or replace function public.handle_new_user()
-returns trigger as $$
-begin
-  insert into public.profiles (id, email, full_name, role)
-  values (
-    new.id,
-    new.email,
-    coalesce(new.raw_user_meta_data->>'full_name', ''),
-    coalesce(new.raw_user_meta_data->>'role', 'boxer')
-  );
-  return new;
-end;
-$$ language plpgsql security definer;
+1. Push your repo to GitHub
+2. Import it at [vercel.com](https://vercel.com)
+3. Add environment variables in Vercel dashboard:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+4. Deploy — Vercel auto-detects Vite and applies the SPA rewrites from `vercel.json`
 
-create trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute function public.handle_new_user();
+## Database Schema
 
--- 6. FUNCTION: Link boxer to assessment when they accept invite
-create or replace function public.accept_invite(token text, user_id uuid)
-returns uuid as $$
-declare
-  assessment_record public.assessments%rowtype;
-begin
-  select * into assessment_record
-  from public.assessments
-  where invite_token = token and status = 'invited';
+Three tables with Row Level Security:
 
-  if not found then
-    raise exception 'Invalid or expired invite';
-  end if;
+- **`profiles`** — user info (id, email, name, role). Auto-created on signup via trigger.
+- **`assessments`** — links coach to boxer with status tracking and unique invite tokens.
+- **`ratings`** — individual skill scores (boxer_score + coach_score per skill per assessment).
 
-  update public.assessments
-  set boxer_id = user_id, status = 'invited'
-  where id = assessment_record.id;
-
-  return assessment_record.id;
-end;
-$$ language plpgsql security definer;
+See `schema.sql` for the full schema including RLS policies, indexes, and database functions.

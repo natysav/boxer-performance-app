@@ -18,14 +18,20 @@ export default function Dashboard({ profile, onLogout }) {
 
   async function loadAssessments() {
     const column = profile.role === 'coach' ? 'coach_id' : 'boxer_id'
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('assessments')
       .select('*')
       .eq(column, profile.id)
       .order('created_at', { ascending: false })
 
+    if (error || !data) {
+      setAssessments([])
+      setLoading(false)
+      return
+    }
+
     // For coach assessments, load boxer profile names
-    if (profile.role === 'coach' && data) {
+    if (profile.role === 'coach') {
       const boxerIds = data.filter(a => a.boxer_id).map(a => a.boxer_id)
       if (boxerIds.length > 0) {
         const { data: boxerProfiles } = await supabase
@@ -41,7 +47,7 @@ export default function Dashboard({ profile, onLogout }) {
     }
 
     // For boxer assessments, load coach names
-    if (profile.role === 'boxer' && data) {
+    if (profile.role === 'boxer') {
       const coachIds = [...new Set(data.map(a => a.coach_id))]
       const { data: coachProfiles } = await supabase
         .from('profiles')
@@ -52,7 +58,7 @@ export default function Dashboard({ profile, onLogout }) {
       data.forEach(a => { a._coach_name = nameMap[a.coach_id] || 'Coach' })
     }
 
-    setAssessments(data || [])
+    setAssessments(data)
     setLoading(false)
   }
 
@@ -146,8 +152,6 @@ export default function Dashboard({ profile, onLogout }) {
               key={a.id}
               className="assessment-card"
               onClick={() => {
-                // Boxer can only open if status is invited or beyond
-                // Coach can open if boxer is done or to view complete
                 if (isCoach && a.status === 'invited') return
                 navigate(`/assessment/${a.id}`)
               }}
