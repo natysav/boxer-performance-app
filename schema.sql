@@ -65,6 +65,13 @@ create policy "Boxers can update own assessments"
   on public.assessments for update
   using (boxer_id = auth.uid());
 
+-- Boxers can see assessments invited to their email (before boxer_id is linked)
+create policy "Boxers can see assessments by email"
+  on public.assessments for select
+  using (
+    boxer_email = (select email from public.profiles where id = auth.uid())
+  );
+
 -- Allow token-based lookup for invite acceptance
 create policy "Anyone can find assessment by invite token"
   on public.assessments for select
@@ -154,7 +161,18 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
--- 6. FUNCTION: Link boxer to assessment when they accept invite
+-- 6. FUNCTION: Auto-link assessments to boxer by email on login
+create or replace function public.link_boxer_by_email(user_id uuid, user_email text)
+returns void as $$
+begin
+  update public.assessments
+  set boxer_id = user_id
+  where boxer_email = user_email
+    and boxer_id is null;
+end;
+$$ language plpgsql security definer;
+
+-- 7. FUNCTION: Link boxer to assessment when they accept invite
 create or replace function public.accept_invite(token text, user_id uuid)
 returns uuid as $$
 declare
