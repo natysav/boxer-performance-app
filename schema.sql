@@ -28,16 +28,6 @@ create policy "Users can insert own profile"
   on public.profiles for insert
   with check (auth.uid() = id);
 
--- Coaches can see their boxers' profiles
-create policy "Coaches can see linked boxer profiles"
-  on public.profiles for select
-  using (
-    id in (
-      select boxer_id from public.assessments
-      where coach_id = auth.uid()
-    )
-  );
-
 -- 2. ASSESSMENTS TABLE
 -- Each assessment links a coach to a boxer with a date and status
 create table public.assessments (
@@ -79,6 +69,16 @@ create policy "Boxers can update own assessments"
 create policy "Anyone can find assessment by invite token"
   on public.assessments for select
   using (invite_token is not null);
+
+-- Coaches can see their boxers' profiles (depends on assessments table)
+create policy "Coaches can see linked boxer profiles"
+  on public.profiles for select
+  using (
+    id in (
+      select boxer_id from public.assessments
+      where coach_id = auth.uid()
+    )
+  );
 
 -- 3. RATINGS TABLE
 -- Stores individual skill ratings per assessment
