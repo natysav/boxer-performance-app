@@ -13,8 +13,19 @@ export default function Dashboard({ profile, onLogout }) {
   const navigate = useNavigate()
 
   useEffect(() => {
-    loadAssessments()
+    initDashboard()
   }, [])
+
+  async function initDashboard() {
+    // For boxers, auto-link any assessments matching their email
+    if (profile.role === 'boxer') {
+      await supabase.rpc('link_boxer_by_email', {
+        user_id: profile.id,
+        user_email: profile.email
+      })
+    }
+    await loadAssessments()
+  }
 
   async function loadAssessments() {
     const column = profile.role === 'coach' ? 'coach_id' : 'boxer_id'
